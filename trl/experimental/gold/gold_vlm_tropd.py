@@ -180,6 +180,14 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
     trainer.train()
     trainer.save_model(args.output_dir)
 
+    # Close the wandb run so the next variant starts a fresh run instead of logging into this one
+    # (both variants run in the same process, and the Trainer does not finish the run on its own).
+    if trainer.accelerator.is_main_process:
+        import wandb
+
+        if wandb.run is not None:
+            wandb.finish()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
