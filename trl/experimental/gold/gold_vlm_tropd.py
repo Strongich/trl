@@ -165,6 +165,7 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
         # Logging
         logging_steps=10,
         log_completions=True,
+        log_completions_steps=10,  # print the rollouts table every log (default 100 would only print at step 100)
         report_to="wandb",
     )
 
