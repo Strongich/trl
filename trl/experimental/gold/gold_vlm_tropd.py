@@ -57,7 +57,10 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from trl.experimental.gold import GOLDConfig, GOLDTrainer
 
 
-SYSTEM_PROMPT = "Think step by step to answer the question and provide the final answer as a single number followed by the ° symbol."
+SYSTEM_PROMPT = """
+Answer the question by briefly explaining the reasoning behind your answer.
+Return the final answer as a single number followed immediately by the ° symbol.
+"""
 
 
 def normalize_solution(solution):
