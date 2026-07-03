@@ -38,6 +38,7 @@ accelerate launch trl/experimental/gold/gold_vlm_tropd.py \
 """
 
 import argparse
+import gc
 
 import torch
 from datasets import load_dataset
@@ -187,6 +188,11 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
 
         if wandb.run is not None:
             wandb.finish()
+
+    # Free the GPU memory held by this variant (models, optimizer, vLLM) before the next run starts.
+    del trainer, student_model, teacher_model
+    gc.collect()
+    torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
