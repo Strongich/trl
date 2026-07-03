@@ -148,8 +148,8 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
         use_vllm=True,
         vllm_mode="colocate",
         vllm_gpu_memory_utilization=0.5,
-        vllm_max_model_length=1024,
-        max_length=2048,
+        vllm_max_model_length=2048,
+        max_length=3072,
         # Training schedule
         per_device_train_batch_size=2,
         gradient_accumulation_steps=8,
