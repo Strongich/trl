@@ -31,10 +31,19 @@
 #                     outlier tokens (https://huggingface.co/papers/2606.01249, Eq. 5-7).
 # Same architecture and tokenizer, so the standard (matched-tokenizer) JSD/RKL path is used. vLLM is
 # enabled for faster on-policy generation.
+#
+# With vLLM colocate, run each variant in its OWN process so the vLLM engine fully releases the GPU
+# before the next variant loads its models (running both in one process OOMs on the second load):
 
 accelerate launch trl/experimental/gold/gold_vlm_tropd.py \
     --student_model_name Qwen/Qwen3-VL-2B-Instruct \
-    --teacher_model_name Qwen/Qwen3-VL-8B-Instruct
+    --teacher_model_name Qwen/Qwen3-VL-8B-Instruct \
+    --variant baseline
+
+accelerate launch trl/experimental/gold/gold_vlm_tropd.py \
+    --student_model_name Qwen/Qwen3-VL-2B-Instruct \
+    --teacher_model_name Qwen/Qwen3-VL-8B-Instruct \
+    --variant tropd
 """
 
 import argparse
@@ -200,6 +209,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--student_model_name", type=str, default="Qwen/Qwen3-VL-2B-Instruct")
     parser.add_argument("--teacher_model_name", type=str, default="Qwen/Qwen3-VL-8B-Instruct")
+    parser.add_argument(
+        "--variant",
+        type=str,
+        choices=["baseline", "tropd", "both"],
+        default="both",
+        help="Which variant(s) to run. With vLLM colocate, prefer running 'baseline' and 'tropd' as two "
+        "separate launches so the vLLM engine releases the GPU between runs; 'both' runs them in one process "
+        "and may OOM on the second model load.",
+    )
     cli_args = parser.parse_args()
 
     # ──────────────────────────────────────────────
@@ -218,5 +236,6 @@ if __name__ == "__main__":
     # ──────────────────────────────────────────────
     # A/B: baseline reverse-KL OPD vs. + TrOPD outlier masking
     # ──────────────────────────────────────────────
-    for use_outlier_fkl_loss in (False, True):
+    variants = {"baseline": [False], "tropd": [True], "both": [False, True]}[cli_args.variant]
+    for use_outlier_fkl_loss in variants:
         run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss)
