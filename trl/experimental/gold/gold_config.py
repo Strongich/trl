@@ -45,6 +45,16 @@ class GOLDConfig(SFTConfig):
         beta (`float`, *optional*, defaults to `0.5`):
             Interpolation coefficient between `0.0` and `1.0` of the Generalized Jensen-Shannon Divergence loss. When
             beta is `0.0`, the loss is the KL divergence. When beta is `1.0`, the loss is the Inverse KL Divergence.
+        use_outlier_fkl_loss (`bool`, *optional*, defaults to `False`):
+            Whether to apply the on-policy trust-region outlier masking from Trust Region On-Policy Distillation
+            (TrOPD, https://huggingface.co/papers/2606.01249). When `True`, each completion token is split into a
+            trust region (trained with reverse KL) and outliers (trained with the teacher's top-`outlier_fkl_top_k`
+            forward KL), with membership drawn from `Bernoulli(min(pi_T / pi_S, 1))` on the sampled token. This
+            replaces the standard Generalized Jensen-Shannon Divergence loss and is intended to be paired with
+            `beta=1.0` (reverse KL). Only supported on the matched-tokenizer path (`use_uld_loss=False`).
+        outlier_fkl_top_k (`int`, *optional*, defaults to `64`):
+            Number of teacher top-k vocabulary entries used for the forward-KL objective on outlier tokens when
+            `use_outlier_fkl_loss=True`.
         max_completion_length (`int`, *optional*, defaults to `128`):
             Maximum number of tokens to generate per completion.
         teacher_model_name_or_path (`str`, *optional*):
@@ -210,6 +220,22 @@ class GOLDConfig(SFTConfig):
             "help": "Interpolation coefficient between `0.0` and `1.0` of the Generalized Jensen-Shannon Divergence "
             "loss. When beta is `0.0`, the loss is the KL divergence. When beta is `1.0`, the loss is the Inverse KL "
             "Divergence."
+        },
+    )
+    use_outlier_fkl_loss: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to apply the on-policy trust-region outlier masking from TrOPD "
+            "(https://huggingface.co/papers/2606.01249). When True, each completion token is split into a trust "
+            "region (reverse KL) and outliers (teacher top-k forward KL) drawn from Bernoulli(min(pi_T / pi_S, 1)). "
+            "Intended to be paired with `beta=1.0`. Only supported when `use_uld_loss=False`."
+        },
+    )
+    outlier_fkl_top_k: int = field(
+        default=64,
+        metadata={
+            "help": "Number of teacher top-k vocabulary entries used for the forward-KL objective on outlier tokens "
+            "when `use_outlier_fkl_loss=True`."
         },
     )
     max_completion_length: int = field(
@@ -467,6 +493,15 @@ class GOLDConfig(SFTConfig):
             raise ValueError("lmbda must be in the range [0.0, 1.0].")
         if self.beta < 0.0 or self.beta > 1.0:
             raise ValueError("beta must be in the range [0.0, 1.0].")
+
+        # Outlier FKL masking (TrOPD) is only defined for the matched-tokenizer path.
+        if self.use_outlier_fkl_loss:
+            if self.use_uld_loss:
+                raise ValueError(
+                    "use_outlier_fkl_loss is only supported on the matched-tokenizer path (use_uld_loss=False)."
+                )
+            if self.outlier_fkl_top_k <= 0:
+                raise ValueError("outlier_fkl_top_k must be positive when use_outlier_fkl_loss=True.")
 
         # Validate that max_length is sufficient for max_completion_length
         if self.max_length is not None and self.max_completion_length >= self.max_length:

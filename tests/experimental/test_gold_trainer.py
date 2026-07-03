@@ -1350,6 +1350,49 @@ def test_generalized_jsd_loss_accepts_probability_inputs():
     torch.testing.assert_close(loss, expected)
 
 
+def test_outlier_fkl_loss_all_trust_matches_reverse_kl(monkeypatch):
+    # When every token lands in the trust region, outlier_fkl_loss reduces to the full-vocab reverse KL, i.e.
+    # generalized_jsd_loss with beta=1.0.
+    monkeypatch.setattr(torch, "bernoulli", lambda p: torch.ones_like(p))
+    torch.manual_seed(0)
+    student_logits = torch.randn(2, 4, 6)
+    teacher_logits = torch.randn(2, 4, 6)
+    labels = torch.tensor([[-100, 1, 2, 3], [0, -100, 4, 5]])
+
+    loss = GOLDTrainer.outlier_fkl_loss(student_logits, teacher_logits, labels, top_k=4, temperature=1.0)
+    expected = GOLDTrainer.generalized_jsd_loss(
+        student_logits, teacher_logits, labels=labels, beta=1.0, temperature=1.0, reduction="batchmean"
+    )
+
+    torch.testing.assert_close(loss, expected)
+
+
+def test_outlier_fkl_loss_all_outlier_matches_topk_fkl(monkeypatch):
+    # When every token is an outlier, outlier_fkl_loss reduces to the teacher top-k forward KL.
+    monkeypatch.setattr(torch, "bernoulli", lambda p: torch.zeros_like(p))
+    torch.manual_seed(0)
+    student_logits = torch.randn(2, 4, 6)
+    teacher_logits = torch.randn(2, 4, 6)
+    labels = torch.tensor([[-100, 1, 2, 3], [0, -100, 4, 5]])
+
+    loss = GOLDTrainer.outlier_fkl_loss(student_logits, teacher_logits, labels, top_k=3, temperature=1.0)
+
+    student_log_probs = torch.log_softmax(student_logits, dim=-1)
+    teacher_log_probs = torch.log_softmax(teacher_logits, dim=-1)
+    topk_teacher_lp, topk_idx = teacher_log_probs.topk(3, dim=-1)
+    topk_student_lp = student_log_probs.gather(-1, topk_idx)
+    fkl = (topk_teacher_lp.exp() * (topk_teacher_lp - topk_student_lp)).sum(dim=-1)
+    mask = labels != -100
+    expected = fkl[mask].sum() / mask.sum().clamp_min(1)
+
+    torch.testing.assert_close(loss, expected)
+
+
+def test_outlier_fkl_loss_config_rejects_uld():
+    with pytest.raises(ValueError, match="use_outlier_fkl_loss is only supported"):
+        GOLDConfig(use_outlier_fkl_loss=True, use_uld_loss=True)
+
+
 def test_uldloss_handles_llama_student_qwen_teacher_sequence(llama_tokenizer, qwen_tokenizer):
     config = build_config(
         uld_use_hybrid_loss=True,

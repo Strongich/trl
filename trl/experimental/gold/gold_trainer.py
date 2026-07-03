@@ -909,6 +909,13 @@ class GOLDTrainer(SFTTrainer):
 
         # Liger fused GKD loss (JSD)
         self.use_liger_gkd_loss = False
+        if args.use_liger_kernel and args.use_outlier_fkl_loss:
+            # The outlier-FKL objective needs the full student/teacher logits to build the trust-region mask and
+            # the teacher top-k forward KL, which the fused Liger path never materializes.
+            raise ValueError(
+                "`use_liger_kernel=True` cannot be combined with `use_outlier_fkl_loss=True`. The fused Liger JSD "
+                "loss does not expose the full logits required for outlier masking. Set `use_liger_kernel=False`."
+            )
         if args.use_liger_kernel:
             # The fused Liger JSD loss requires student and teacher to share a vocabulary, while ULD loss exists
             # precisely for the cross-tokenizer case — the two cannot be combined.
@@ -1001,6 +1008,8 @@ class GOLDTrainer(SFTTrainer):
 
         self.lmbda = args.lmbda
         self.beta = args.beta
+        self.use_outlier_fkl_loss = args.use_outlier_fkl_loss
+        self.outlier_fkl_top_k = args.outlier_fkl_top_k
         self.temperature = args.temperature
         self.top_p = args.top_p
         self.seq_kd = args.seq_kd
@@ -2277,6 +2286,80 @@ class GOLDTrainer(SFTTrainer):
         else:
             return jsd
 
+    @staticmethod
+    def outlier_fkl_loss(
+        student_logits,
+        teacher_logits,
+        labels,
+        top_k=64,
+        temperature=1.0,
+        num_items_in_batch=None,
+    ):
+        """
+        Trust-region outlier masking loss for on-policy distillation. See Eq. (5)-(7) of Trust Region On-Policy
+        Distillation (TrOPD, https://huggingface.co/papers/2606.01249).
+
+        Each completion token is stochastically assigned to the trust region with probability
+        `min(pi_T(x) / pi_S(x), 1)` (Eq. 6), where `x` is the sampled (label) token. Trust-region tokens are trained
+        with the full-vocabulary reverse KL `KL(pi_S || pi_T)`; outlier tokens are trained with a forward KL over the
+        teacher's top-`k` vocabulary `sum_{v in topk(pi_T)} pi_T,v log(pi_T,v / pi_S,v)` (Eq. 7). The trust-region term
+        is identical to `generalized_jsd_loss` with `beta=1.0`, so the two paths differ only on outlier tokens.
+
+        Args:
+            student_logits:
+                Tensor of shape (batch_size, sequence_length, vocab_size).
+            teacher_logits:
+                Tensor of shape (batch_size, sequence_length, vocab_size).
+            labels:
+                Tensor of shape (batch_size, sequence_length) with -100 for positions to ignore.
+            top_k:
+                Number of teacher top-k vocabulary entries used for the outlier forward KL (default: 64).
+            temperature:
+                Softmax temperature (default: 1.0).
+            num_items_in_batch:
+                Global number of valid tokens for gradient-accumulation-correct normalization. If `None`, the loss is
+                normalized by the local number of valid tokens.
+
+        Returns:
+            loss: Scalar tensor with the trust-region outlier loss.
+        """
+        student_logits = student_logits / temperature
+        teacher_logits = teacher_logits / temperature
+        student_log_probs = F.log_softmax(student_logits, dim=-1)
+        teacher_log_probs = F.log_softmax(teacher_logits, dim=-1)
+
+        mask = labels != -100
+
+        # Per-token log-probs of the sampled (label) token. clamp_min(0) keeps gather in-bounds for -100 positions,
+        # which are dropped by `mask` afterwards.
+        gather_idx = labels.clamp_min(0).unsqueeze(-1)
+        student_tok_lp = student_log_probs.gather(-1, gather_idx).squeeze(-1)
+        teacher_tok_lp = teacher_log_probs.gather(-1, gather_idx).squeeze(-1)
+
+        # Trust-region membership: M ~ Bernoulli(min(pi_T / pi_S, 1)) on the sampled token (Eq. 6).
+        p_trust = (teacher_tok_lp - student_tok_lp).exp().clamp_max(1.0)
+        trust_mask = torch.bernoulli(p_trust)
+
+        # Trust region: full-vocabulary reverse KL, KL(pi_S || pi_T) per token.
+        rkl = (student_log_probs.exp() * (student_log_probs - teacher_log_probs)).sum(dim=-1)
+
+        # Outliers: teacher top-k forward KL, sum_{v in topk(pi_T)} pi_T,v (log pi_T,v - log pi_S,v) (Eq. 7).
+        topk_teacher_lp, topk_idx = teacher_log_probs.topk(top_k, dim=-1)
+        topk_student_lp = student_log_probs.gather(-1, topk_idx)
+        fkl = (topk_teacher_lp.exp() * (topk_teacher_lp - topk_student_lp)).sum(dim=-1)
+
+        per_token = trust_mask * rkl + (1.0 - trust_mask) * fkl
+        per_token = per_token[mask]
+
+        # Normalize by the global number of valid tokens for gradient-accumulation-correct loss (see issue #4719),
+        # matching the convention in `generalized_jsd_loss`.
+        if num_items_in_batch is not None:
+            loss_sum = per_token.sum()
+            if isinstance(num_items_in_batch, torch.Tensor):
+                num_items_in_batch = num_items_in_batch.to(loss_sum.device)
+            return loss_sum / num_items_in_batch
+        return per_token.sum() / mask.sum().clamp_min(1)
+
     def _build_teacher_vlm_inputs(
         self, completion_texts: list[str], raw_images: list, raw_prompts: list
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
@@ -2519,14 +2602,24 @@ class GOLDTrainer(SFTTrainer):
                 shifted_student_logits = outputs_student.logits[:, :-1, :]
                 shifted_teacher_logits = outputs_teacher.logits[:, :-1, :]
                 shifted_labels = inputs["labels"][:, 1:]
-                loss = self.generalized_jsd_loss(
-                    student_logits=shifted_student_logits,
-                    teacher_logits=shifted_teacher_logits,
-                    labels=shifted_labels,
-                    beta=self.beta,
-                    temperature=self.temperature,
-                    num_items_in_batch=num_items_in_batch,
-                )
+                if self.use_outlier_fkl_loss:
+                    loss = self.outlier_fkl_loss(
+                        student_logits=shifted_student_logits,
+                        teacher_logits=shifted_teacher_logits,
+                        labels=shifted_labels,
+                        top_k=self.outlier_fkl_top_k,
+                        temperature=self.temperature,
+                        num_items_in_batch=num_items_in_batch,
+                    )
+                else:
+                    loss = self.generalized_jsd_loss(
+                        student_logits=shifted_student_logits,
+                        teacher_logits=shifted_teacher_logits,
+                        labels=shifted_labels,
+                        beta=self.beta,
+                        temperature=self.temperature,
+                        num_items_in_batch=num_items_in_batch,
+                    )
 
         if self.use_uld_loss and self.teacher_tokenizer is not None:
             student_labels = inputs["labels"].clone()

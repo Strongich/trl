@@ -1769,6 +1769,25 @@ trainer.train()
 
 For more details, see the [MiniLLM Trainer documentation](minillm_trainer).
 
+### Trust Region On-Policy Distillation
+
+**📜 Paper**: https://huggingface.co/papers/2606.01249
+
+Trust Region On-Policy Distillation (TrOPD) stabilizes reverse-KL on-policy distillation by partitioning each student-generated token into a *trust region* and *outliers*. When the teacher assigns extremely low probability to a student-sampled token, the reverse-KL gradient explodes and destabilizes training. TrOPD keeps reverse KL only where the teacher's supervision is reliable and replaces it with a teacher top-k forward KL on outlier tokens, where membership is drawn from `Bernoulli(min(pi_T / pi_S, 1))`.
+
+The on-policy trust-region objective (Eq. 5-7) is available in the [`experimental.GOLDTrainer`] via `use_outlier_fkl_loss`, intended to be paired with `beta=1.0` (reverse KL):
+
+```python
+from trl.experimental.gold import GOLDConfig, GOLDTrainer
+
+config = GOLDConfig(
+    beta=1.0,                    # reverse KL on trust-region tokens
+    lmbda=1.0,                   # full on-policy
+    use_outlier_fkl_loss=True,   # top-k forward KL on outlier tokens
+    outlier_fkl_top_k=64,
+)
+```
+
 ### Reinforcement Learning via Self-Distillation
 
 **📜 Paper**: https://huggingface.co/papers/2601.20802
