@@ -48,7 +48,7 @@ from transformers import AutoModelForImageTextToText, AutoProcessor
 from trl.experimental.gold import GOLDConfig, GOLDTrainer
 
 
-SYSTEM_PROMPT = "Answer with a single number followed by the ° symbol."
+SYSTEM_PROMPT = "Think step by step to answer the question and provide the final answer as a single number followed by the ° symbol."
 
 
 def normalize_solution(solution):
@@ -136,7 +136,7 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
         lmbda=1.0,
         beta=1.0,
         temperature=0.6,
-        max_completion_length=128,
+        max_completion_length=1024,
         max_grad_norm=1.0,
         teacher_model_name_or_path=cli_args.teacher_model_name,
         num_generations=1,
@@ -152,7 +152,7 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
         max_length=2048,
         # Training schedule
         per_device_train_batch_size=2,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=8,
         max_steps=100,
         learning_rate=1e-4,
         warmup_steps=10,
