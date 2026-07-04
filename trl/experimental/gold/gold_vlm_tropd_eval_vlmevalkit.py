@@ -124,17 +124,17 @@ def aggregate(work_dir, model_names, seeds):
             for csv in sorted(glob.glob(os.path.join(work_dir, run_name, "*.csv"))):
                 df = pd.read_csv(csv)
                 dataset = os.path.basename(csv).replace(f"{run_name}_", "").rsplit(".", 1)[0]
-                # Overall score: "Overall" row (MathVista/MathVision report task splits as rows)
-                # or "Overall" column, depending on the dataset's csv layout.
+                # Overall score: "Overall" row (MathVista keys rows on "Task&Skill", MathVision on
+                # "Subject") or "Overall" column, depending on the dataset's csv layout.
                 overall = None
                 for col in df.columns:
-                    if col.lower() in ("task&skill", "task", "split", "category"):
+                    if col.lower() in ("task&skill", "task", "subject", "split", "category"):
                         row = df[df[col].astype(str).str.lower() == "overall"]
                         if len(row):
                             num = row.select_dtypes("number")
                             if num.shape[1]:
                                 overall = float(num.iloc[0, -1])
-                        break
+                                break
                 if overall is None and "Overall" in df.columns:
                     overall = float(df["Overall"].iloc[0])
                 if overall is not None:
@@ -153,9 +153,16 @@ def main(args):
 
     models = {}  # display name -> merged checkpoint path
     for adapter_dir in args.adapter_dirs:
-        models[os.path.basename(adapter_dir.rstrip("/"))] = merge_adapter(args.base_model, adapter_dir)
+        if args.aggregate_only:
+            models[os.path.basename(adapter_dir.rstrip("/"))] = None  # only names are needed
+        else:
+            models[os.path.basename(adapter_dir.rstrip("/"))] = merge_adapter(args.base_model, adapter_dir)
     if args.include_base:
         models[args.base_model.split("/")[-1] + "-nodistill"] = args.base_model
+
+    if args.aggregate_only:
+        aggregate(work_dir, list(models.keys()), args.seeds)
+        return
 
     data_section = {}
     for dataset in args.data:
@@ -227,6 +234,11 @@ if __name__ == "__main__":
     parser.add_argument("--temperature", type=float, default=0.6, help="Sampling temperature (>0 so seeds differ).")
     parser.add_argument("--top_p", type=float, default=0.95)
     parser.add_argument("--work_dir", type=str, default="vlmevalkit_results")
+    parser.add_argument(
+        "--aggregate_only",
+        action="store_true",
+        help="Skip inference/evaluation and only re-print the summary table from existing result csvs.",
+    )
     # Worker mode (internal): run one (model, seed) config in a fresh process.
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--seed", type=int, help=argparse.SUPPRESS)
