@@ -2602,6 +2602,33 @@ class GOLDTrainer(SFTTrainer):
                 shifted_student_logits = outputs_student.logits[:, :-1, :]
                 shifted_teacher_logits = outputs_teacher.logits[:, :-1, :]
                 shifted_labels = inputs["labels"][:, 1:]
+
+                # TrOPD diagnostic: expected fraction of completion tokens outside the trust region,
+                # E[1 - min(π_T/π_S, 1)] over sampled tokens (Eq. 6 of https://huggingface.co/papers/2606.01249).
+                # With `use_outlier_fkl_loss=True` this is the expected fraction of tokens routed to the top-k
+                # forward KL; with `False` it is the counterfactual fraction that *would* have been routed, so
+                # baseline and TrOPD runs log a directly comparable signal.
+                if not self.use_uld_loss:
+                    with torch.no_grad():
+                        mask = shifted_labels != -100
+                        gather_idx = shifted_labels.clamp_min(0).unsqueeze(-1)
+                        student_tok_lp = (
+                            F.log_softmax(shifted_student_logits / self.temperature, dim=-1)
+                            .gather(-1, gather_idx)
+                            .squeeze(-1)
+                        )
+                        teacher_tok_lp = (
+                            F.log_softmax(shifted_teacher_logits / self.temperature, dim=-1)
+                            .gather(-1, gather_idx)
+                            .squeeze(-1)
+                        )
+                        p_trust = (teacher_tok_lp - student_tok_lp).exp().clamp_max(1.0)
+                        outlier_frac = ((1.0 - p_trust) * mask).sum() / mask.sum().clamp_min(1)
+                    mode = "train" if self.model.training else "eval"
+                    self._metrics[mode]["outlier_token_frac"].append(
+                        self.accelerator.gather_for_metrics(outlier_frac).mean().item()
+                    )
+
                 if self.use_outlier_fkl_loss:
                     loss = self.outlier_fkl_loss(
                         student_logits=shifted_student_logits,

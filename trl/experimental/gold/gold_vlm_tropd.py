@@ -44,6 +44,10 @@ accelerate launch trl/experimental/gold/gold_vlm_tropd.py \
     --student_model_name Qwen/Qwen3-VL-2B-Instruct \
     --teacher_model_name Qwen/Qwen3-VL-8B-Instruct \
     --variant tropd
+
+# Longer runs (separate run names/output dirs, sparser eval/logging, checkpoints every 250 steps):
+# add `--max_steps 1000` to both commands. The `train/outlier_token_frac` metric shows how often the
+# TrOPD trust region (would have) triggered — if it stays ~0, both variants are equivalent by design.
 """
 
 import argparse
@@ -140,6 +144,13 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
     student_short = cli_args.student_model_name.split("/")[-1]
     teacher_short = cli_args.teacher_model_name.split("/")[-1]
     run_name = f"gold-vlm-{student_short}-from-{teacher_short}-{variant}"
+    if cli_args.max_steps != 100:
+        run_name += f"-{cli_args.max_steps}steps"  # keep the original 100-step run dirs/wandb names intact
+
+    # Schedule knobs scale with run length: the 100-step A/B keeps its original cadence; longer runs
+    # evaluate/print less often and keep intermediate checkpoints (to eval both variants at the same
+    # step if one destabilizes late).
+    long_run = cli_args.max_steps > 100
 
     args = GOLDConfig(
         output_dir=run_name,
@@ -165,19 +176,20 @@ def run(cli_args, train_dataset, eval_dataset, use_outlier_fkl_loss):
         # Training schedule
         per_device_train_batch_size=2,
         gradient_accumulation_steps=8,
-        max_steps=100,
+        max_steps=cli_args.max_steps,
         learning_rate=1e-4,
         warmup_steps=10,
+        save_steps=250 if long_run else 500,  # 500 is the HF default, never reached in 100-step runs
         # Evaluation
         per_device_eval_batch_size=2,
         eval_strategy="steps",
-        eval_steps=25,
+        eval_steps=100 if long_run else 25,
         # Precision
         bf16=True,
         # Logging
         logging_steps=10,
         log_completions=True,
-        log_completions_steps=10,  # print the rollouts table every log (default 100 would only print at step 100)
+        log_completions_steps=50 if long_run else 10,  # default 100 would only print once per 100 steps
         report_to="wandb",
     )
 
@@ -212,6 +224,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--student_model_name", type=str, default="Qwen/Qwen3-VL-2B-Instruct")
     parser.add_argument("--teacher_model_name", type=str, default="Qwen/Qwen3-VL-8B-Instruct")
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=100,
+        help="Training steps. Runs longer than 100 steps switch to a sparser eval/logging cadence and keep "
+        "intermediate checkpoints every 250 steps.",
+    )
     parser.add_argument(
         "--variant",
         type=str,
