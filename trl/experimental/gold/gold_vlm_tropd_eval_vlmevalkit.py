@@ -58,8 +58,12 @@ DATA_CLASSES = {
 
 
 def merge_adapter(base_model, adapter_dir):
-    """Merge a LoRA adapter into the base model so vLLM can load it as a plain checkpoint."""
-    merged_dir = adapter_dir.rstrip("/") + "-merged"
+    """Merge a LoRA adapter into the base model so vLLM can load it as a plain checkpoint.
+
+    Returns an absolute path: the worker subprocess runs with cwd=VLMEvalKit, so a relative
+    path would not resolve there (transformers would treat it as a Hub repo id).
+    """
+    merged_dir = os.path.abspath(adapter_dir.rstrip("/") + "-merged")
     if os.path.isdir(merged_dir):
         print(f"Reusing existing merged model: {merged_dir}")
         return merged_dir
