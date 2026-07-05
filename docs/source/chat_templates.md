@@ -176,6 +176,12 @@ Patched Qwen3.5 templates, shared logic across both flavors (they differ only in
 
 Patched Qwen3.6 template. Diff vs `qwen3_6.jinja`: same set of changes as `qwen3_training.jinja` — require both `<think>` and `</think>` to be present before parsing, drop the `loop.index0 > ns.last_query_index` conditional so the thinking block is always emitted (prefix-preservation), and wrap assistant output with `&#123;% generation %&#125;` / `&#123;% endgeneration %&#125;` markers for SFT assistant-only loss.
 
+### `smolvlm_training.jinja`
+
+Patched SmolVLM template. Diff vs `smolvlm.jinja`:
+
+Split the assistant message into its own branch so the `&#123;% generation %&#125;` / `&#123;% endgeneration %&#125;` markers wrap the assistant content. This enables `return_assistant_tokens_mask=True` to produce correct masks for SFT assistant-only loss.
+
 ## Related utilities
 
 See [Chat Template Utilities](chat_template_utils) for the helper functions ([`clone_chat_template`], [`is_chat_template_prefix_preserving`], [`get_training_chat_template`]) that operate on these templates.
